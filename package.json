@@ -64,5 +64,8 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+  },
+  "dependencies": {
+    "react-lighthouse-viewer": "github:mayur9210/react-lighthouse-viewer"
   }
 }
