@@ -16,29 +16,21 @@
  */
 'use strict';
 
-import CategoryRenderer from './category-renderer.js';
-import Util from './util.js';
+/** @typedef {import('./dom.js').DOM} DOM */
 
-/* globals self, Util, CategoryRenderer */
+import {Util} from './util.js';
+import {CategoryRenderer} from './category-renderer.js';
 
-/** @typedef {import('./dom.js')} DOM */
-
-class PerformanceCategoryRenderer extends CategoryRenderer {
+export class PerformanceCategoryRenderer extends CategoryRenderer {
   /**
    * @param {LH.ReportResult.AuditRef} audit
    * @return {!Element}
    */
   _renderMetric(audit) {
-    const tmpl = this.dom.cloneTemplate(
-      '#tmpl-lh-metric',
-      this.templateContext
-    );
+    const tmpl = this.dom.createComponent('metric');
     const element = this.dom.find('.lh-metric', tmpl);
     element.id = audit.result.id;
-    const rating = Util.calculateRating(
-      audit.result.score,
-      audit.result.scoreDisplayMode
-    );
+    const rating = Util.calculateRating(audit.result.score, audit.result.scoreDisplayMode);
     element.classList.add(`lh-metric--${rating}`);
 
     const titleEl = this.dom.find('.lh-metric__title', tmpl);
@@ -48,16 +40,13 @@ class PerformanceCategoryRenderer extends CategoryRenderer {
     valueEl.textContent = audit.result.displayValue || '';
 
     const descriptionEl = this.dom.find('.lh-metric__description', tmpl);
-    descriptionEl.appendChild(
-      this.dom.convertMarkdownLinkSnippets(audit.result.description)
-    );
+    descriptionEl.appendChild(this.dom.convertMarkdownLinkSnippets(audit.result.description));
 
     if (audit.result.scoreDisplayMode === 'error') {
       descriptionEl.textContent = '';
       valueEl.textContent = 'Error!';
       const tooltip = this.dom.createChildOf(descriptionEl, 'span');
-      tooltip.textContent =
-        audit.result.errorMessage || 'Report error: no metric information';
+      tooltip.textContent = audit.result.errorMessage || 'Report error: no metric information';
     }
 
     return element;
@@ -69,10 +58,7 @@ class PerformanceCategoryRenderer extends CategoryRenderer {
    * @return {!Element}
    */
   _renderOpportunity(audit, scale) {
-    const oppTmpl = this.dom.cloneTemplate(
-      '#tmpl-lh-opportunity',
-      this.templateContext
-    );
+    const oppTmpl = this.dom.createComponent('opportunity');
     const element = this.populateAuditValues(audit, oppTmpl);
     element.id = audit.result.id;
 
@@ -85,24 +71,17 @@ class PerformanceCategoryRenderer extends CategoryRenderer {
     }
 
     // Overwrite the displayValue with opportunity's wastedMs
-    const displayEl = this.dom.find('.lh-audit__display-text', element);
-    const sparklineWidthPct = `${(details.overallSavingsMs / scale) * 100}%`;
-    this.dom.find(
-      '.lh-sparkline__bar',
-      element
-    ).style.width = sparklineWidthPct;
-    displayEl.textContent = Util.i18n.formatSeconds(
-      details.overallSavingsMs,
-      0.01
-    );
+    // TODO: normalize this to one tagName.
+    const displayEl =
+      this.dom.find('span.lh-audit__display-text, div.lh-audit__display-text', element);
+    const sparklineWidthPct = `${details.overallSavingsMs / scale * 100}%`;
+    this.dom.find('div.lh-sparkline__bar', element).style.width = sparklineWidthPct;
+    displayEl.textContent = Util.i18n.formatSeconds(details.overallSavingsMs, 0.01);
 
     // Set [title] tooltips
     if (audit.result.displayValue) {
       const displayValue = audit.result.displayValue;
-      this.dom.find(
-        '.lh-load-opportunity__sparkline',
-        element
-      ).title = displayValue;
+      this.dom.find('div.lh-load-opportunity__sparkline', element).title = displayValue;
       displayEl.title = displayValue;
     }
 
@@ -134,55 +113,36 @@ class PerformanceCategoryRenderer extends CategoryRenderer {
    * @return {string}
    */
   _getScoringCalculatorHref(auditRefs) {
-    const v5andv6metrics = auditRefs.filter(
-      (audit) => audit.group === 'metrics'
-    );
-    const fci = auditRefs.find((audit) => audit.id === 'first-cpu-idle');
-    const fmp = auditRefs.find(
-      (audit) => audit.id === 'first-meaningful-paint'
-    );
-    if (fci) v5andv6metrics.push(fci);
-    if (fmp) v5andv6metrics.push(fmp);
-
-    /** @type {Record<string, string>} */
-    const acronymMapping = {
-      'cumulative-layout-shift': 'CLS',
-      'first-contentful-paint': 'FCP',
-      'first-cpu-idle': 'FCI',
-      'first-meaningful-paint': 'FMP',
-      interactive: 'TTI',
-      'largest-contentful-paint': 'LCP',
-      'speed-index': 'SI',
-      'total-blocking-time': 'TBT',
-    };
+    // TODO: filter by !!acronym when dropping renderer support of v7 LHRs.
+    const metrics = auditRefs.filter(audit => audit.group === 'metrics');
+    const fci = auditRefs.find(audit => audit.id === 'first-cpu-idle');
+    const fmp = auditRefs.find(audit => audit.id === 'first-meaningful-paint');
+    if (fci) metrics.push(fci);
+    if (fmp) metrics.push(fmp);
 
     /**
      * Clamp figure to 2 decimal places
      * @param {number} val
      * @return {number}
      */
-    const clampTo2Decimals = (val) => Math.round(val * 100) / 100;
+    const clampTo2Decimals = val => Math.round(val * 100) / 100;
 
-    const metricPairs = v5andv6metrics.map((audit) => {
+    const metricPairs = metrics.map(audit => {
       let value;
       if (typeof audit.result.numericValue === 'number') {
-        value =
-          audit.id === 'cumulative-layout-shift'
-            ? clampTo2Decimals(audit.result.numericValue)
-            : Math.round(audit.result.numericValue);
+        value = audit.id === 'cumulative-layout-shift' ?
+          clampTo2Decimals(audit.result.numericValue) :
+          Math.round(audit.result.numericValue);
         value = value.toString();
       } else {
         value = 'null';
       }
-      return [acronymMapping[audit.id] || audit.id, value];
+      return [audit.acronym || audit.id, value];
     });
     const paramPairs = [...metricPairs];
 
     if (Util.reportJson) {
-      paramPairs.push([
-        'device',
-        Util.reportJson.configSettings.emulatedFormFactor,
-      ]);
+      paramPairs.push(['device', Util.reportJson.configSettings.formFactor]);
       paramPairs.push(['version', Util.reportJson.lighthouseVersion]);
     }
 
@@ -193,133 +153,105 @@ class PerformanceCategoryRenderer extends CategoryRenderer {
   }
 
   /**
+   * For performance, audits with no group should be a diagnostic or opportunity.
+   * The audit details type will determine which of the two groups an audit is in.
+   *
+   * @param {LH.ReportResult.AuditRef} audit
+   * @return {'load-opportunity'|'diagnostic'|null}
+   */
+  _classifyPerformanceAudit(audit) {
+    if (audit.group) return null;
+    if (audit.result.details && audit.result.details.type === 'opportunity') {
+      return 'load-opportunity';
+    }
+    return 'diagnostic';
+  }
+
+  /**
    * @param {LH.ReportResult.Category} category
    * @param {Object<string, LH.Result.ReportGroup>} groups
-   * @param {'PSI'=} environment 'PSI' and undefined are the only valid values
+   * @param {{gatherMode: LH.Result.GatherMode}=} options
    * @return {Element}
    * @override
    */
-  render(category, groups, environment) {
+  render(category, groups, options) {
     const strings = Util.i18n.strings;
     const element = this.dom.createElement('div', 'lh-category');
-    if (environment === 'PSI') {
-      const gaugeEl = this.dom.createElement('div', 'lh-score__gauge');
-      gaugeEl.appendChild(this.renderScoreGauge(category, groups));
-      element.appendChild(gaugeEl);
-    } else {
-      this.createPermalinkSpan(element, category.id);
-      element.appendChild(this.renderCategoryHeader(category, groups));
-    }
+    element.id = category.id;
+    element.appendChild(this.renderCategoryHeader(category, groups, options));
 
     // Metrics.
-    const metricAuditsEl = this.renderAuditGroup(groups.metrics);
+    const metricAudits = category.auditRefs.filter(audit => audit.group === 'metrics');
+    if (metricAudits.length) {
+      const [metricsGroupEl, metricsFooterEl] = this.renderAuditGroup(groups.metrics);
 
-    // Metric descriptions toggle.
-    const toggleTmpl = this.dom.cloneTemplate(
-      '#tmpl-lh-metrics-toggle',
-      this.templateContext
-    );
-    const _toggleEl = this.dom.find('.lh-metrics-toggle', toggleTmpl);
-    metricAuditsEl.append(..._toggleEl.childNodes);
+      // Metric descriptions toggle.
+      const checkboxEl = this.dom.createElement('input', 'lh-metrics-toggle__input');
+      const checkboxId = `lh-metrics-toggle${Util.getUniqueSuffix()}`;
+      checkboxEl.setAttribute('aria-label', 'Toggle the display of metric descriptions');
+      checkboxEl.type = 'checkbox';
+      checkboxEl.id = checkboxId;
+      metricsGroupEl.prepend(checkboxEl);
+      const metricHeaderEl = this.dom.find('.lh-audit-group__header', metricsGroupEl);
+      const labelEl = this.dom.createChildOf(metricHeaderEl, 'label', 'lh-metrics-toggle__label');
+      labelEl.htmlFor = checkboxId;
+      const showEl = this.dom.createChildOf(labelEl, 'span', 'lh-metrics-toggle__labeltext--show');
+      const hideEl = this.dom.createChildOf(labelEl, 'span', 'lh-metrics-toggle__labeltext--hide');
+      showEl.textContent = Util.i18n.strings.expandView;
+      hideEl.textContent = Util.i18n.strings.collapseView;
 
-    const metricAudits = category.auditRefs.filter(
-      (audit) => audit.group === 'metrics'
-    );
-    const metricsBoxesEl = this.dom.createChildOf(
-      metricAuditsEl,
-      'div',
-      'lh-metrics-container'
-    );
+      const metricsBoxesEl = this.dom.createElement('div', 'lh-metrics-container');
+      metricsGroupEl.insertBefore(metricsBoxesEl, metricsFooterEl);
+      metricAudits.forEach(item => {
+        metricsBoxesEl.appendChild(this._renderMetric(item));
+      });
 
-    metricAudits.forEach((item) => {
-      metricsBoxesEl.appendChild(this._renderMetric(item));
-    });
+      const descriptionEl = this.dom.find('.lh-category-header__description', element);
+      const estValuesEl = this.dom.createChildOf(descriptionEl, 'div', 'lh-metrics__disclaimer');
+      const disclaimerEl = this.dom.convertMarkdownLinkSnippets(strings.varianceDisclaimer);
+      estValuesEl.appendChild(disclaimerEl);
 
-    const estValuesEl = this.dom.createChildOf(
-      metricAuditsEl,
-      'div',
-      'lh-metrics__disclaimer'
-    );
-    const disclaimerEl = this.dom.convertMarkdownLinkSnippets(
-      strings.varianceDisclaimer
-    );
-    estValuesEl.appendChild(disclaimerEl);
+      // Add link to score calculator.
+      const calculatorLink = this.dom.createChildOf(estValuesEl, 'a', 'lh-calclink');
+      calculatorLink.target = '_blank';
+      calculatorLink.textContent = strings.calculatorLink;
+      this.dom.safelySetHref(calculatorLink, this._getScoringCalculatorHref(category.auditRefs));
 
-    // Add link to score calculator.
-    const calculatorLink = this.dom.createChildOf(
-      estValuesEl,
-      'a',
-      'lh-calclink'
-    );
-    calculatorLink.target = '_blank';
-    calculatorLink.textContent = strings.calculatorLink;
-    calculatorLink.href = this._getScoringCalculatorHref(category.auditRefs);
 
-    metricAuditsEl.classList.add('lh-audit-group--metrics');
-    element.appendChild(metricAuditsEl);
+      metricsGroupEl.classList.add('lh-audit-group--metrics');
+      element.appendChild(metricsGroupEl);
+    }
 
     // Filmstrip
-    const timelineEl = this.dom.createChildOf(
-      element,
-      'div',
-      'lh-filmstrip-container'
-    );
-    const thumbnailAudit = category.auditRefs.find(
-      (audit) => audit.id === 'screenshot-thumbnails'
-    );
-    const thumbnailResult = thumbnailAudit && thumbnailAudit.result;
-    if (thumbnailResult && thumbnailResult.details) {
+    const timelineEl = this.dom.createChildOf(element, 'div', 'lh-filmstrip-container');
+    const thumbnailAudit = category.auditRefs.find(audit => audit.id === 'screenshot-thumbnails');
+    const thumbnailResult = thumbnailAudit?.result;
+    if (thumbnailResult?.details) {
       timelineEl.id = thumbnailResult.id;
       const filmstripEl = this.detailsRenderer.render(thumbnailResult.details);
       filmstripEl && timelineEl.appendChild(filmstripEl);
     }
 
-    // Budgets
-    /** @type {Array<Element>} */
-    const budgetTableEls = [];
-    ['performance-budget', 'timing-budget'].forEach((id) => {
-      const audit = category.auditRefs.find((audit) => audit.id === id);
-      if (audit && audit.result.details) {
-        const table = this.detailsRenderer.render(audit.result.details);
-        if (table) {
-          table.id = id;
-          table.classList.add('lh-audit');
-          budgetTableEls.push(table);
-        }
-      }
-    });
-    if (budgetTableEls.length > 0) {
-      const budgetsGroupEl = this.renderAuditGroup(groups.budgets);
-      budgetTableEls.forEach((table) => budgetsGroupEl.appendChild(table));
-      budgetsGroupEl.classList.add('lh-audit-group--budgets');
-      element.appendChild(budgetsGroupEl);
-    }
-
     // Opportunities
     const opportunityAudits = category.auditRefs
-      .filter(
-        (audit) =>
-          audit.group === 'load-opportunities' &&
-          !Util.showAsPassed(audit.result)
-      )
-      .sort(
-        (auditA, auditB) =>
-          this._getWastedMs(auditB) - this._getWastedMs(auditA)
-      );
+        .filter(audit => this._classifyPerformanceAudit(audit) === 'load-opportunity')
+        .filter(audit => !Util.showAsPassed(audit.result))
+        .sort((auditA, auditB) => this._getWastedMs(auditB) - this._getWastedMs(auditA));
+
+    const filterableMetrics = metricAudits.filter(a => !!a.relevantAudits);
+    // TODO: only add if there are opportunities & diagnostics rendered.
+    if (filterableMetrics.length) {
+      this.renderMetricAuditFilter(filterableMetrics, element);
+    }
 
     if (opportunityAudits.length) {
       // Scale the sparklines relative to savings, minimum 2s to not overstate small savings
       const minimumScale = 2000;
-      const wastedMsValues = opportunityAudits.map((audit) =>
-        this._getWastedMs(audit)
-      );
+      const wastedMsValues = opportunityAudits.map(audit => this._getWastedMs(audit));
       const maxWaste = Math.max(...wastedMsValues);
       const scale = Math.max(Math.ceil(maxWaste / 1000) * 1000, minimumScale);
-      const groupEl = this.renderAuditGroup(groups['load-opportunities']);
-      const tmpl = this.dom.cloneTemplate(
-        '#tmpl-lh-opportunity-header',
-        this.templateContext
-      );
+      const [groupEl, footerEl] = this.renderAuditGroup(groups['load-opportunities']);
+      const tmpl = this.dom.createComponent('opportunityHeader');
 
       this.dom.find('.lh-load-opportunity__col--one', tmpl).textContent =
         strings.opportunityResourceColumnLabel;
@@ -327,48 +259,33 @@ class PerformanceCategoryRenderer extends CategoryRenderer {
         strings.opportunitySavingsColumnLabel;
 
       const headerEl = this.dom.find('.lh-load-opportunity__header', tmpl);
-      groupEl.appendChild(headerEl);
-      opportunityAudits.forEach((item) =>
-        groupEl.appendChild(this._renderOpportunity(item, scale))
-      );
+      groupEl.insertBefore(headerEl, footerEl);
+      opportunityAudits.forEach(item =>
+        groupEl.insertBefore(this._renderOpportunity(item, scale), footerEl));
       groupEl.classList.add('lh-audit-group--load-opportunities');
       element.appendChild(groupEl);
     }
 
     // Diagnostics
     const diagnosticAudits = category.auditRefs
-      .filter(
-        (audit) =>
-          audit.group === 'diagnostics' && !Util.showAsPassed(audit.result)
-      )
-      .sort((a, b) => {
-        const scoreA =
-          a.result.scoreDisplayMode === 'informative'
-            ? 100
-            : Number(a.result.score);
-        const scoreB =
-          b.result.scoreDisplayMode === 'informative'
-            ? 100
-            : Number(b.result.score);
-        return scoreA - scoreB;
-      });
+        .filter(audit => this._classifyPerformanceAudit(audit) === 'diagnostic')
+        .filter(audit => !Util.showAsPassed(audit.result))
+        .sort((a, b) => {
+          const scoreA = a.result.scoreDisplayMode === 'informative' ? 100 : Number(a.result.score);
+          const scoreB = b.result.scoreDisplayMode === 'informative' ? 100 : Number(b.result.score);
+          return scoreA - scoreB;
+        });
 
     if (diagnosticAudits.length) {
-      const groupEl = this.renderAuditGroup(groups['diagnostics']);
-      diagnosticAudits.forEach((item) =>
-        groupEl.appendChild(this.renderAudit(item))
-      );
+      const [groupEl, footerEl] = this.renderAuditGroup(groups['diagnostics']);
+      diagnosticAudits.forEach(item => groupEl.insertBefore(this.renderAudit(item), footerEl));
       groupEl.classList.add('lh-audit-group--diagnostics');
       element.appendChild(groupEl);
     }
 
     // Passed audits
-    const passedAudits = category.auditRefs.filter(
-      (audit) =>
-        (audit.group === 'load-opportunities' ||
-          audit.group === 'diagnostics') &&
-        Util.showAsPassed(audit.result)
-    );
+    const passedAudits = category.auditRefs
+        .filter(audit => this._classifyPerformanceAudit(audit) && Util.showAsPassed(audit.result));
 
     if (!passedAudits.length) return element;
 
@@ -378,8 +295,95 @@ class PerformanceCategoryRenderer extends CategoryRenderer {
     };
     const passedElem = this.renderClump('passed', clumpOpts);
     element.appendChild(passedElem);
+
+    // Budgets
+    /** @type {Array<Element>} */
+    const budgetTableEls = [];
+    ['performance-budget', 'timing-budget'].forEach((id) => {
+      const audit = category.auditRefs.find(audit => audit.id === id);
+      if (audit?.result.details) {
+        const table = this.detailsRenderer.render(audit.result.details);
+        if (table) {
+          table.id = id;
+          table.classList.add('lh-details', 'lh-details--budget', 'lh-audit');
+          budgetTableEls.push(table);
+        }
+      }
+    });
+    if (budgetTableEls.length > 0) {
+      const [groupEl, footerEl] = this.renderAuditGroup(groups.budgets);
+      budgetTableEls.forEach(table => groupEl.insertBefore(table, footerEl));
+      groupEl.classList.add('lh-audit-group--budgets');
+      element.appendChild(groupEl);
+    }
+
     return element;
   }
-}
 
-export default PerformanceCategoryRenderer;
+  /**
+   * Render the control to filter the audits by metric. The filtering is done at runtime by CSS only
+   * @param {LH.ReportResult.AuditRef[]} filterableMetrics
+   * @param {HTMLDivElement} categoryEl
+   */
+  renderMetricAuditFilter(filterableMetrics, categoryEl) {
+    const metricFilterEl = this.dom.createElement('div', 'lh-metricfilter');
+    const textEl = this.dom.createChildOf(metricFilterEl, 'span', 'lh-metricfilter__text');
+    textEl.textContent = Util.i18n.strings.showRelevantAudits;
+
+    const filterChoices = /** @type {LH.ReportResult.AuditRef[]} */ ([
+      ({acronym: 'All'}),
+      ...filterableMetrics,
+    ]);
+
+    // Form labels need to reference unique IDs, but multiple reports rendered in the same DOM (eg PSI)
+    // would mean ID conflict.  To address this, we 'scope' these radio inputs with a unique suffix.
+    const uniqSuffix = Util.getUniqueSuffix();
+    for (const metric of filterChoices) {
+      const elemId = `metric-${metric.acronym}-${uniqSuffix}`;
+      const radioEl = this.dom.createChildOf(metricFilterEl, 'input', 'lh-metricfilter__radio');
+      radioEl.type = 'radio';
+      radioEl.name = `metricsfilter-${uniqSuffix}`;
+      radioEl.id = elemId;
+
+      const labelEl = this.dom.createChildOf(metricFilterEl, 'label', 'lh-metricfilter__label');
+      labelEl.htmlFor = elemId;
+      labelEl.title = metric.result?.title;
+      labelEl.textContent = metric.acronym || metric.id;
+
+      if (metric.acronym === 'All') {
+        radioEl.checked = true;
+        labelEl.classList.add('lh-metricfilter__label--active');
+      }
+      categoryEl.append(metricFilterEl);
+
+      // Toggle class/hidden state based on filter choice.
+      radioEl.addEventListener('input', _ => {
+        for (const elem of categoryEl.querySelectorAll('label.lh-metricfilter__label')) {
+          elem.classList.toggle('lh-metricfilter__label--active', elem.htmlFor === elemId);
+        }
+        categoryEl.classList.toggle('lh-category--filtered', metric.acronym !== 'All');
+
+        for (const perfAuditEl of categoryEl.querySelectorAll('div.lh-audit')) {
+          if (metric.acronym === 'All') {
+            perfAuditEl.hidden = false;
+            continue;
+          }
+
+          perfAuditEl.hidden = true;
+          if (metric.relevantAudits && metric.relevantAudits.includes(perfAuditEl.id)) {
+            perfAuditEl.hidden = false;
+          }
+        }
+
+        // Hide groups/clumps if all child audits are also hidden.
+        const groupEls = categoryEl.querySelectorAll('div.lh-audit-group, details.lh-audit-group');
+        for (const groupEl of groupEls) {
+          groupEl.hidden = false;
+          const childEls = Array.from(groupEl.querySelectorAll('div.lh-audit'));
+          const areAllHidden = !!childEls.length && childEls.every(auditEl => auditEl.hidden);
+          groupEl.hidden = areAllHidden;
+        }
+      });
+    }
+  }
+}

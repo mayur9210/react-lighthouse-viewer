@@ -5,15 +5,18 @@
  */
 'use strict';
 
-/* globals self, URL */
-
 // Not named `NBSP` because that creates a duplicate identifier (util.js).
 const NBSP2 = '\xa0';
+const KiB = 1024;
+const MiB = KiB * KiB;
 
-class I18n {
+/**
+ * @template T
+ */
+export class I18n {
   /**
    * @param {LH.Locale} locale
-   * @param {LH.I18NRendererStrings=} strings
+   * @param {T} strings
    */
   constructor(locale, strings) {
     // When testing, use a locale with more exciting numeric formatting.
@@ -21,7 +24,8 @@ class I18n {
 
     this._numberDateLocale = locale;
     this._numberFormatter = new Intl.NumberFormat(locale);
-    this._strings = /** @type {LH.I18NRendererStrings} */ (strings || {});
+    this._percentFormatter = new Intl.NumberFormat(locale, {style: 'percent'});
+    this._strings = strings;
   }
 
   get strings() {
@@ -40,14 +44,22 @@ class I18n {
   }
 
   /**
+   * Format percent.
+   * @param {number} number 0–1
+   * @return {string}
+   */
+  formatPercent(number) {
+    return this._percentFormatter.format(number);
+  }
+
+  /**
    * @param {number} size
    * @param {number=} granularity Controls how coarse the displayed value is, defaults to 0.1
    * @return {string}
    */
   formatBytesToKiB(size, granularity = 0.1) {
-    const kbs = this._numberFormatter.format(
-      Math.round(size / 1024 / granularity) * granularity
-    );
+    const formatter = this._byteFormatterForGranularity(granularity);
+    const kbs = formatter.format(Math.round(size / 1024 / granularity) * granularity);
     return `${kbs}${NBSP2}KiB`;
   }
 
@@ -56,11 +68,51 @@ class I18n {
    * @param {number=} granularity Controls how coarse the displayed value is, defaults to 0.1
    * @return {string}
    */
+  formatBytesToMiB(size, granularity = 0.1) {
+    const formatter = this._byteFormatterForGranularity(granularity);
+    const kbs = formatter.format(Math.round(size / (1024 ** 2) / granularity) * granularity);
+    return `${kbs}${NBSP2}MiB`;
+  }
+
+  /**
+   * @param {number} size
+   * @param {number=} granularity Controls how coarse the displayed value is, defaults to 1
+   * @return {string}
+   */
   formatBytes(size, granularity = 1) {
-    const kbs = this._numberFormatter.format(
-      Math.round(size / granularity) * granularity
-    );
+    const formatter = this._byteFormatterForGranularity(granularity);
+    const kbs = formatter.format(Math.round(size / granularity) * granularity);
     return `${kbs}${NBSP2}bytes`;
+  }
+
+  /**
+   * @param {number} size
+   * @param {number=} granularity Controls how coarse the displayed value is, defaults to 0.1
+   * @return {string}
+   */
+  formatBytesWithBestUnit(size, granularity = 0.1) {
+    if (size >= MiB) return this.formatBytesToMiB(size, granularity);
+    if (size >= KiB) return this.formatBytesToKiB(size, granularity);
+    return this.formatNumber(size, granularity) + '\xa0B';
+  }
+
+  /**
+   * Format bytes with a constant number of fractional digits, i.e. for a granularity of 0.1, 10 becomes '10.0'
+   * @param {number} granularity Controls how coarse the displayed value is
+   * @return {Intl.NumberFormat}
+   */
+  _byteFormatterForGranularity(granularity) {
+    // assume any granularity above 1 will not contain fractional parts, i.e. will never be 1.5
+    let numberOfFractionDigits = 0;
+    if (granularity < 1) {
+      numberOfFractionDigits = -Math.floor(Math.log10(granularity));
+    }
+
+    return new Intl.NumberFormat(this._numberDateLocale, {
+      ...this._numberFormatter.resolvedOptions(),
+      maximumFractionDigits: numberOfFractionDigits,
+      minimumFractionDigits: numberOfFractionDigits,
+    });
   }
 
   /**
@@ -70,7 +122,9 @@ class I18n {
    */
   formatMilliseconds(ms, granularity = 10) {
     const coarseTime = Math.round(ms / granularity) * granularity;
-    return `${this._numberFormatter.format(coarseTime)}${NBSP2}ms`;
+    return coarseTime === 0
+      ? `${this._numberFormatter.format(0)}${NBSP2}ms`
+      : `${this._numberFormatter.format(coarseTime)}${NBSP2}ms`;
   }
 
   /**
@@ -91,24 +145,24 @@ class I18n {
   formatDateTime(date) {
     /** @type {Intl.DateTimeFormatOptions} */
     const options = {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: 'numeric',
-      timeZoneName: 'short',
+      month: 'short', day: 'numeric', year: 'numeric',
+      hour: 'numeric', minute: 'numeric', timeZoneName: 'short',
     };
-    let formatter = new Intl.DateTimeFormat(this._numberDateLocale, options);
 
     // Force UTC if runtime timezone could not be detected.
     // See https://github.com/GoogleChrome/lighthouse/issues/1056
-    const tz = formatter.resolvedOptions().timeZone;
-    if (!tz || tz.toLowerCase() === 'etc/unknown') {
+    // and https://github.com/GoogleChrome/lighthouse/pull/9822
+    let formatter;
+    try {
+      formatter = new Intl.DateTimeFormat(this._numberDateLocale, options);
+    } catch (err) {
       options.timeZone = 'UTC';
       formatter = new Intl.DateTimeFormat(this._numberDateLocale, options);
     }
+
     return formatter.format(new Date(date));
   }
+
   /**
    * Converts a time in milliseconds into a duration string, i.e. `1d 2h 13m 52s`
    * @param {number} timeInMilliseconds
@@ -122,14 +176,15 @@ class I18n {
 
     /** @type {Array<string>} */
     const parts = [];
-    const unitLabels = /** @type {Object<string, number>} */ ({
+    /** @type {Record<string, number>} */
+    const unitLabels = {
       d: 60 * 60 * 24,
       h: 60 * 60,
       m: 60,
       s: 1,
-    });
+    };
 
-    Object.keys(unitLabels).forEach((label) => {
+    Object.keys(unitLabels).forEach(label => {
       const unit = unitLabels[label];
       const numberOfUnits = Math.floor(timeInSeconds / unit);
       if (numberOfUnits > 0) {
@@ -141,5 +196,3 @@ class I18n {
     return parts.join(' ');
   }
 }
-
-export default I18n;

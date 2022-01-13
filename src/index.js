@@ -1,7 +1,7 @@
 import React from 'react';
-import DOM from './renderer/dom';
-import ReportRenderer from './renderer/report-renderer';
-import ReportUIFeatures from './renderer/report-ui-features';
+import { DOM } from './renderer/dom';
+import { ReportRenderer } from './renderer/report-renderer';
+import { ReportUIFeatures } from './renderer/report-ui-features';
 import './report-styles.css';
 import __html from './templates';
 

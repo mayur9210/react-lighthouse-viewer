@@ -5,10 +5,10 @@
  */
 'use strict';
 
-/* globals self, Util */
+/** @typedef {import('./details-renderer').DetailsRenderer} DetailsRenderer */
+/** @typedef {import('./dom').DOM} DOM */
 
-/** @typedef {import('./details-renderer')} DetailsRenderer */
-/** @typedef {import('./dom')} DOM */
+import {Util} from './util.js';
 
 /** @enum {number} */
 const LineVisibility = {
@@ -55,8 +55,8 @@ const classNamesByContentType = {
  */
 function getLineAndPreviousLine(lines, lineNumber) {
   return {
-    line: lines.find((l) => l.lineNumber === lineNumber),
-    previousLine: lines.find((l) => l.lineNumber === lineNumber - 1),
+    line: lines.find(l => l.lineNumber === lineNumber),
+    previousLine: lines.find(l => l.lineNumber === lineNumber - 1),
   };
 }
 
@@ -65,7 +65,7 @@ function getLineAndPreviousLine(lines, lineNumber) {
  * @param {number} lineNumber
  */
 function getMessagesForLineNumber(messages, lineNumber) {
-  return messages.filter((h) => h.lineNumber === lineNumber);
+  return messages.filter(h => h.lineNumber === lineNumber);
 }
 
 /**
@@ -87,20 +87,19 @@ function getLinesWhenCollapsed(details) {
  * can click "Expand snippet" to show more.
  * Content lines with annotations are highlighted.
  */
-class SnippetRenderer {
+export class SnippetRenderer {
   /**
    * @param {DOM} dom
-   * @param {DocumentFragment} tmpl
    * @param {LH.Audit.Details.SnippetValue} details
    * @param {DetailsRenderer} detailsRenderer
    * @param {function} toggleExpandedFn
    * @return {DocumentFragment}
    */
-  static renderHeader(dom, tmpl, details, detailsRenderer, toggleExpandedFn) {
+  static renderHeader(dom, details, detailsRenderer, toggleExpandedFn) {
     const linesWhenCollapsed = getLinesWhenCollapsed(details);
     const canExpand = linesWhenCollapsed.length < details.lines.length;
 
-    const header = dom.cloneTemplate('#tmpl-lh-snippet__header', tmpl);
+    const header = dom.createComponent('snippetHeader');
     dom.find('.lh-snippet__title', header).textContent = details.title;
 
     const {
@@ -144,15 +143,15 @@ class SnippetRenderer {
    * @return {Element}
    */
   static renderSnippetLine(
-    dom,
-    tmpl,
-    { content, lineNumber, truncated, contentType, visibility }
+      dom,
+      tmpl,
+      {content, lineNumber, truncated, contentType, visibility}
   ) {
-    const clonedTemplate = dom.cloneTemplate('#tmpl-lh-snippet__line', tmpl);
+    const clonedTemplate = dom.createComponent('snippetLine');
     const contentLine = dom.find('.lh-snippet__line', clonedTemplate);
-    const { classList } = contentLine;
+    const {classList} = contentLine;
 
-    classNamesByContentType[contentType].forEach((typeClass) =>
+    classNamesByContentType[contentType].forEach(typeClass =>
       classList.add(typeClass)
     );
 
@@ -214,11 +213,11 @@ class SnippetRenderer {
    * @return {DocumentFragment}
    */
   static renderSnippetContent(dom, tmpl, details) {
-    const template = dom.cloneTemplate('#tmpl-lh-snippet__content', tmpl);
+    const template = dom.createComponent('snippetContent');
     const snippetEl = dom.find('.lh-snippet__snippet-inner', template);
 
     // First render messages that don't belong to specific lines
-    details.generalMessages.forEach((m) =>
+    details.generalMessages.forEach(m =>
       snippetEl.append(SnippetRenderer.renderMessage(dom, tmpl, m))
     );
     // Then render the lines and their messages, as well as placeholders where lines are omitted
@@ -234,7 +233,7 @@ class SnippetRenderer {
    * @return {DocumentFragment}
    */
   static renderSnippetLines(dom, tmpl, details) {
-    const { lineMessages, generalMessages, lineCount, lines } = details;
+    const {lineMessages, generalMessages, lineCount, lines} = details;
     const linesWhenCollapsed = getLinesWhenCollapsed(details);
     const hasOnlyGeneralMessages =
       generalMessages.length > 0 && lineMessages.length === 0;
@@ -247,7 +246,7 @@ class SnippetRenderer {
     let hasPendingOmittedLinesPlaceholderForCollapsedState = false;
 
     for (let lineNumber = 1; lineNumber <= lineCount; lineNumber++) {
-      const { line, previousLine } = getLineAndPreviousLine(lines, lineNumber);
+      const {line, previousLine} = getLineAndPreviousLine(lines, lineNumber);
       const {
         line: lineWhenCollapsed,
         previousLine: previousLineWhenCollapsed,
@@ -288,7 +287,7 @@ class SnippetRenderer {
         // In the collapsed state we don't show omitted lines placeholders around
         // the edges of the snippet
         const hasRenderedAllLinesVisibleWhenCollapsed = !linesWhenCollapsed.some(
-          (l) => l.lineNumber > lineNumber
+          l => l.lineNumber > lineNumber
         );
         const onlyShowWhenExpanded =
           hasRenderedAllLinesVisibleWhenCollapsed || lineNumber === 1;
@@ -324,7 +323,7 @@ class SnippetRenderer {
         SnippetRenderer.renderSnippetLine(dom, tmpl, contentLineDetails)
       );
 
-      messages.forEach((message) => {
+      messages.forEach(message => {
         lineContainer.append(SnippetRenderer.renderMessage(dom, tmpl, message));
       });
     }
@@ -334,18 +333,16 @@ class SnippetRenderer {
 
   /**
    * @param {DOM} dom
-   * @param {ParentNode} templateContext
    * @param {LH.Audit.Details.SnippetValue} details
    * @param {DetailsRenderer} detailsRenderer
    * @return {!Element}
    */
-  static render(dom, templateContext, details, detailsRenderer) {
-    const tmpl = dom.cloneTemplate('#tmpl-lh-snippet', templateContext);
+  static render(dom, details, detailsRenderer) {
+    const tmpl = dom.createComponent('snippet');
     const snippetEl = dom.find('.lh-snippet', tmpl);
 
     const header = SnippetRenderer.renderHeader(
       dom,
-      tmpl,
       details,
       detailsRenderer,
       () => snippetEl.classList.toggle('lh-snippet--expanded')
@@ -356,5 +353,3 @@ class SnippetRenderer {
     return snippetEl;
   }
 }
-
-export default SnippetRenderer;

@@ -16,22 +16,10 @@
  */
 'use strict';
 
-import CategoryRenderer from './category-renderer';
-import Util from './util';
+import {Util} from './util.js';
+import {CategoryRenderer} from './category-renderer.js';
 
-/* globals self, Util, CategoryRenderer */
-
-/**
- * An always-increasing counter for making unique SVG ID suffixes.
- */
-const getUniqueSuffix = (() => {
-  let svgSuffix = 0;
-  return function () {
-    return svgSuffix++;
-  };
-})();
-
-class PwaCategoryRenderer extends CategoryRenderer {
+export class PwaCategoryRenderer extends CategoryRenderer {
   /**
    * @param {LH.ReportResult.Category} category
    * @param {Object<string, LH.Result.ReportGroup>} [groupDefinitions]
@@ -39,29 +27,21 @@ class PwaCategoryRenderer extends CategoryRenderer {
    */
   render(category, groupDefinitions = {}) {
     const categoryElem = this.dom.createElement('div', 'lh-category');
-    this.createPermalinkSpan(categoryElem, category.id);
-    categoryElem.appendChild(
-      this.renderCategoryHeader(category, groupDefinitions)
-    );
+    categoryElem.id = category.id;
+    categoryElem.appendChild(this.renderCategoryHeader(category, groupDefinitions));
 
     const auditRefs = category.auditRefs;
 
     // Regular audits aren't split up into pass/fail/notApplicable clumps, they're
     // all put in a top-level clump that isn't expandable/collapsible.
-    const regularAuditRefs = auditRefs.filter(
-      (ref) => ref.result.scoreDisplayMode !== 'manual'
-    );
+    const regularAuditRefs = auditRefs.filter(ref => ref.result.scoreDisplayMode !== 'manual');
     const auditsElem = this._renderAudits(regularAuditRefs, groupDefinitions);
     categoryElem.appendChild(auditsElem);
 
     // Manual audits are still in a manual clump.
-    const manualAuditRefs = auditRefs.filter(
-      (ref) => ref.result.scoreDisplayMode === 'manual'
-    );
-    const manualElem = this.renderClump('manual', {
-      auditRefs: manualAuditRefs,
-      description: category.manualDescription,
-    });
+    const manualAuditRefs = auditRefs.filter(ref => ref.result.scoreDisplayMode === 'manual');
+    const manualElem = this.renderClump('manual',
+      {auditRefs: manualAuditRefs, description: category.manualDescription});
     categoryElem.appendChild(manualElem);
 
     return categoryElem;
@@ -72,26 +52,18 @@ class PwaCategoryRenderer extends CategoryRenderer {
    * @param {Record<string, LH.Result.ReportGroup>} groupDefinitions
    * @return {DocumentFragment}
    */
-  renderScoreGauge(category, groupDefinitions) {
+  renderCategoryScore(category, groupDefinitions) {
     // Defer to parent-gauge style if category error.
     if (category.score === null) {
       return super.renderScoreGauge(category, groupDefinitions);
     }
 
-    const tmpl = this.dom.cloneTemplate(
-      '#tmpl-lh-gauge--pwa',
-      this.templateContext
-    );
-    const wrapper = /** @type {HTMLAnchorElement} */ (this.dom.find(
-      '.lh-gauge--pwa__wrapper',
-      tmpl
-    ));
-    wrapper.href = `#${category.id}`;
+    const tmpl = this.dom.createComponent('gaugePwa');
+    const wrapper = this.dom.find('a.lh-gauge--pwa__wrapper', tmpl);
 
     // Correct IDs in case multiple instances end up in the page.
     const svgRoot = tmpl.querySelector('svg');
-    if (!svgRoot)
-      throw new Error('no SVG element found in PWA score gauge template');
+    if (!svgRoot) throw new Error('no SVG element found in PWA score gauge template');
     PwaCategoryRenderer._makeSvgReferencesUnique(svgRoot);
 
     const allGroups = this._getGroupIds(category.auditRefs);
@@ -116,9 +88,7 @@ class PwaCategoryRenderer extends CategoryRenderer {
    * @return {!Set<string>}
    */
   _getGroupIds(auditRefs) {
-    const groupIds = auditRefs
-      .map((ref) => ref.group)
-      .filter(/** @return {g is string} */ (g) => !!g);
+    const groupIds = auditRefs.map(ref => ref.group).filter(/** @return {g is string} */ g => !!g);
     return new Set(groupIds);
   }
 
@@ -151,11 +121,9 @@ class PwaCategoryRenderer extends CategoryRenderer {
 
     const tips = [];
     for (const groupId of groupIds) {
-      const groupAuditRefs = auditRefs.filter((ref) => ref.group === groupId);
+      const groupAuditRefs = auditRefs.filter(ref => ref.group === groupId);
       const auditCount = groupAuditRefs.length;
-      const passedCount = groupAuditRefs.filter((ref) =>
-        Util.showAsPassed(ref.result)
-      ).length;
+      const passedCount = groupAuditRefs.filter(ref => Util.showAsPassed(ref.result)).length;
 
       const title = groupDefinitions[groupId].title;
       tips.push(`${title}: ${passedCount}/${auditCount}`);
@@ -172,18 +140,12 @@ class PwaCategoryRenderer extends CategoryRenderer {
    * @return {Element}
    */
   _renderAudits(auditRefs, groupDefinitions) {
-    const auditsElem = this.renderUnexpandableClump(
-      auditRefs,
-      groupDefinitions
-    );
+    const auditsElem = this.renderUnexpandableClump(auditRefs, groupDefinitions);
 
     // Add a 'badged' class to group if all audits in that group pass.
     const passsingGroupIds = this._getPassingGroupIds(auditRefs);
     for (const groupId of passsingGroupIds) {
-      const groupElem = this.dom.find(
-        `.lh-audit-group--${groupId}`,
-        auditsElem
-      );
+      const groupElem = this.dom.find(`.lh-audit-group--${groupId}`, auditsElem);
       groupElem.classList.add('lh-badged');
     }
 
@@ -201,7 +163,7 @@ class PwaCategoryRenderer extends CategoryRenderer {
     const defsEl = svgRoot.querySelector('defs');
     if (!defsEl) return;
 
-    const idSuffix = getUniqueSuffix();
+    const idSuffix = Util.getUniqueSuffix();
     const elementsToUpdate = defsEl.querySelectorAll('[id]');
     for (const el of elementsToUpdate) {
       const oldId = el.id;
@@ -222,5 +184,3 @@ class PwaCategoryRenderer extends CategoryRenderer {
     }
   }
 }
-
-export default PwaCategoryRenderer;

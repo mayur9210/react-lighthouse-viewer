@@ -16,9 +16,7 @@
  */
 'use strict';
 
-/* globals self, URL */
-
-/** @typedef {import('./i18n')} I18n */
+/** @template T @typedef {import('./i18n').I18n<T>} I18n */
 
 const ELLIPSIS = '\u2026';
 const NBSP = '\xa0';
@@ -26,44 +24,25 @@ const PASS_THRESHOLD = 0.9;
 const SCREENSHOT_PREFIX = 'data:image/jpeg;base64,';
 
 const RATINGS = {
-  PASS: { label: 'pass', minScore: PASS_THRESHOLD },
-  AVERAGE: { label: 'average', minScore: 0.5 },
-  FAIL: { label: 'fail' },
-  ERROR: { label: 'error' },
+  PASS: {label: 'pass', minScore: PASS_THRESHOLD},
+  AVERAGE: {label: 'average', minScore: 0.5},
+  FAIL: {label: 'fail'},
+  ERROR: {label: 'error'},
 };
 
 // 25 most used tld plus one domains (aka public suffixes) from http archive.
 // @see https://github.com/GoogleChrome/lighthouse/pull/5065#discussion_r191926212
 // The canonical list is https://publicsuffix.org/learn/ but we're only using subset to conserve bytes
 const listOfTlds = [
-  'com',
-  'co',
-  'gov',
-  'edu',
-  'ac',
-  'org',
-  'go',
-  'gob',
-  'or',
-  'net',
-  'in',
-  'ne',
-  'nic',
-  'gouv',
-  'web',
-  'spb',
-  'blog',
-  'jus',
-  'kiev',
-  'mil',
-  'wi',
-  'qc',
-  'ca',
-  'bel',
-  'on',
+  'com', 'co', 'gov', 'edu', 'ac', 'org', 'go', 'gob', 'or', 'net', 'in', 'ne', 'nic', 'gouv',
+  'web', 'spb', 'blog', 'jus', 'kiev', 'mil', 'wi', 'qc', 'ca', 'bel', 'on',
 ];
 
 class Util {
+  /** @type {I18n<typeof UIStrings>} */
+  // @ts-expect-error: Is set in report renderer.
+  static i18n = null;
+
   static get PASS_THRESHOLD() {
     return PASS_THRESHOLD;
   }
@@ -83,35 +62,32 @@ class Util {
    */
   static prepareReportResult(result) {
     // If any mutations happen to the report within the renderers, we want the original object untouched
-    const clone = /** @type {LH.ReportResult} */ (JSON.parse(
-      JSON.stringify(result)
-    ));
+    const clone = /** @type {LH.ReportResult} */ (JSON.parse(JSON.stringify(result)));
 
     // If LHR is older (≤3.0.3), it has no locale setting. Set default.
     if (!clone.configSettings.locale) {
       clone.configSettings.locale = 'en';
     }
+    if (!clone.configSettings.formFactor) {
+      // @ts-expect-error fallback handling for emulatedFormFactor
+      clone.configSettings.formFactor = clone.configSettings.emulatedFormFactor;
+    }
 
     for (const audit of Object.values(clone.audits)) {
       // Turn 'not-applicable' (LHR <4.0) and 'not_applicable' (older proto versions)
       // into 'notApplicable' (LHR ≥4.0).
-      // @ts-ignore tsc rightly flags that these values shouldn't occur.
+      // @ts-expect-error tsc rightly flags that these values shouldn't occur.
       // eslint-disable-next-line max-len
-      if (
-        audit.scoreDisplayMode === 'not_applicable' ||
-        audit.scoreDisplayMode === 'not-applicable'
-      ) {
+      if (audit.scoreDisplayMode === 'not_applicable' || audit.scoreDisplayMode === 'not-applicable') {
         audit.scoreDisplayMode = 'notApplicable';
       }
 
       if (audit.details) {
         // Turn `auditDetails.type` of undefined (LHR <4.2) and 'diagnostic' (LHR <5.0)
         // into 'debugdata' (LHR ≥5.0).
-        // @ts-ignore tsc rightly flags that these values shouldn't occur.
-        if (
-          audit.details.type === undefined ||
-          audit.details.type === 'diagnostic'
-        ) {
+        // @ts-expect-error tsc rightly flags that these values shouldn't occur.
+        if (audit.details.type === undefined || audit.details.type === 'diagnostic') {
+          // @ts-expect-error details is of type never.
           audit.details.type = 'debugdata';
         }
 
@@ -127,16 +103,51 @@ class Util {
     }
 
     // For convenience, smoosh all AuditResults into their auditRef (which has just weight & group)
-    if (typeof clone.categories !== 'object')
-      throw new Error('No categories provided.');
+    if (typeof clone.categories !== 'object') throw new Error('No categories provided.');
+
+    /** @type {Map<string, Array<LH.ReportResult.AuditRef>>} */
+    const relevantAuditToMetricsMap = new Map();
+
+    // This backcompat converts old LHRs (<9.0.0) to use the new "hidden" group.
+    // Old LHRs used "no group" to identify audits that should be hidden in performance instead of the "hidden" group.
+    // Newer LHRs use "no group" to identify opportunities and diagnostics whose groups are assigned by details type.
+    const [majorVersion] = clone.lighthouseVersion.split('.').map(Number);
+    const perfCategory = clone.categories['performance'];
+    if (majorVersion < 9 && perfCategory) {
+      if (!clone.categoryGroups) clone.categoryGroups = {};
+      clone.categoryGroups['hidden'] = {title: ''};
+      for (const auditRef of perfCategory.auditRefs) {
+        if (!auditRef.group) {
+          auditRef.group = 'hidden';
+        } else if (['load-opportunities', 'diagnostics'].includes(auditRef.group)) {
+          delete auditRef.group;
+        }
+      }
+    }
+
     for (const category of Object.values(clone.categories)) {
-      category.auditRefs.forEach((auditRef) => {
+      // Make basic lookup table for relevantAudits
+      category.auditRefs.forEach(metricRef => {
+        if (!metricRef.relevantAudits) return;
+        metricRef.relevantAudits.forEach(auditId => {
+          const arr = relevantAuditToMetricsMap.get(auditId) || [];
+          arr.push(metricRef);
+          relevantAuditToMetricsMap.set(auditId, arr);
+        });
+      });
+
+      category.auditRefs.forEach(auditRef => {
         const result = clone.audits[auditRef.id];
         auditRef.result = result;
 
+        // Attach any relevantMetric auditRefs
+        if (relevantAuditToMetricsMap.has(auditRef.id)) {
+          auditRef.relevantMetrics = relevantAuditToMetricsMap.get(auditRef.id);
+        }
+
         // attach the stackpacks to the auditRef object
         if (clone.stackPacks) {
-          clone.stackPacks.forEach((pack) => {
+          clone.stackPacks.forEach(pack => {
             if (pack.descriptions[auditRef.id]) {
               auditRef.stackPacks = auditRef.stackPacks || [];
               auditRef.stackPacks.push({
@@ -177,6 +188,8 @@ class Util {
 
   /**
    * Convert a score to a rating label.
+   * TODO: Return `'error'` for `score === null && !scoreDisplayMode`.
+   *
    * @param {number|null} score
    * @param {string=} scoreDisplayMode
    * @return {string}
@@ -214,7 +227,7 @@ class Util {
 
     // Split on backticked code spans.
     const parts = text.split(/`(.*?)`/g);
-    for (let i = 0; i < parts.length; i++) {
+    for (let i = 0; i < parts.length; i ++) {
       const text = parts[i];
 
       // Empty strings are an artifact of splitting, not meaningful.
@@ -248,8 +261,7 @@ class Util {
       // Shift off the same number of elements as the pre-split and capture groups.
       const [preambleText, linkText, linkHref] = parts.splice(0, 3);
 
-      if (preambleText) {
-        // Skip empty text as it's an artifact of splitting, not meaningful.
+      if (preambleText) { // Skip empty text as it's an artifact of splitting, not meaningful.
         segments.push({
           isLink: false,
           text: preambleText,
@@ -276,15 +288,10 @@ class Util {
    */
   static getURLDisplayName(parsedUrl, options) {
     // Closure optional properties aren't optional in tsc, so fallback needs undefined  values.
-    options = options || {
-      numPathParts: undefined,
-      preserveQuery: undefined,
-      preserveHost: undefined,
-    };
-    const numPathParts =
-      options.numPathParts !== undefined ? options.numPathParts : 2;
-    const preserveQuery =
-      options.preserveQuery !== undefined ? options.preserveQuery : true;
+    options = options || {numPathParts: undefined, preserveQuery: undefined,
+      preserveHost: undefined};
+    const numPathParts = options.numPathParts !== undefined ? options.numPathParts : 2;
+    const preserveQuery = options.preserveQuery !== undefined ? options.preserveQuery : true;
     const preserveHost = options.preserveHost || false;
 
     let name;
@@ -294,7 +301,7 @@ class Util {
       name = parsedUrl.href;
     } else {
       name = parsedUrl.pathname;
-      const parts = name.split('/').filter((part) => part.length);
+      const parts = name.split('/').filter(part => part.length);
       if (numPathParts && parts.length > numPathParts) {
         name = ELLIPSIS + parts.slice(-1 * numPathParts).join('/');
       }
@@ -311,10 +318,8 @@ class Util {
     // Always elide hexadecimal hash
     name = name.replace(/([a-f0-9]{7})[a-f0-9]{13}[a-f0-9]*/g, `$1${ELLIPSIS}`);
     // Also elide other hash-like mixed-case strings
-    name = name.replace(
-      /([a-zA-Z0-9-_]{9})(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])[a-zA-Z0-9-_]{10,}/g,
-      `$1${ELLIPSIS}`
-    );
+    name = name.replace(/([a-zA-Z0-9-_]{9})(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])[a-zA-Z0-9-_]{10,}/g,
+      `$1${ELLIPSIS}`);
     // Also elide long number sequences
     name = name.replace(/(\d{3})\d{6,}/g, `$1${ELLIPSIS}`);
     // Merge any adjacent ellipses
@@ -335,8 +340,7 @@ class Util {
     if (name.length > MAX_LENGTH) {
       const dotIndex = name.lastIndexOf('.');
       if (dotIndex >= 0) {
-        name =
-          name.slice(0, MAX_LENGTH - 1 - (name.length - dotIndex)) +
+        name = name.slice(0, MAX_LENGTH - 1 - (name.length - dotIndex)) +
           // Show file extension
           `${ELLIPSIS}${name.slice(dotIndex)}`;
       } else {
@@ -392,7 +396,7 @@ class Util {
   /**
    * Returns a primary domain for provided hostname (e.g. www.example.com -> example.com).
    * @param {string|URL} url hostname or URL object
-   * @returns {string}
+   * @return {string}
    */
   static getRootDomain(url) {
     const hostname = Util.createOrReturnURL(url).hostname;
@@ -406,87 +410,64 @@ class Util {
     return hostname.split('.').slice(-splitTld.length).join('.');
   }
 
-  /**
-   * @param {LH.Config.Settings} settings
-   * @return {!Array<{name: string, description: string}>}
-   */
-  static getEnvironmentDisplayValues(settings) {
-    const emulationDesc = Util.getEmulationDescriptions(settings);
-
-    return [
-      {
-        name: Util.i18n.strings.runtimeSettingsDevice,
-        description: emulationDesc.deviceEmulation,
-      },
-      {
-        name: Util.i18n.strings.runtimeSettingsNetworkThrottling,
-        description: emulationDesc.networkThrottling,
-      },
-      {
-        name: Util.i18n.strings.runtimeSettingsCPUThrottling,
-        description: emulationDesc.cpuThrottling,
-      },
-    ];
-  }
 
   /**
-   * @param {LH.Config.Settings} settings
-   * @return {{deviceEmulation: string, networkThrottling: string, cpuThrottling: string}}
+   * @param {LH.Result['configSettings']} settings
+   * @return {!{deviceEmulation: string, networkThrottling: string, cpuThrottling: string, summary: string}}
    */
   static getEmulationDescriptions(settings) {
     let cpuThrottling;
     let networkThrottling;
+    let summary;
 
     const throttling = settings.throttling;
 
     switch (settings.throttlingMethod) {
       case 'provided':
-        cpuThrottling = Util.i18n.strings.throttlingProvided;
-        networkThrottling = Util.i18n.strings.throttlingProvided;
+        summary = networkThrottling = cpuThrottling = Util.i18n.strings.throttlingProvided;
         break;
       case 'devtools': {
-        const { cpuSlowdownMultiplier, requestLatencyMs } = throttling;
-        cpuThrottling = `${Util.i18n.formatNumber(
-          cpuSlowdownMultiplier
-        )}x slowdown (DevTools)`;
-        networkThrottling =
-          `${Util.i18n.formatNumber(requestLatencyMs)}${NBSP}ms HTTP RTT, ` +
-          `${Util.i18n.formatNumber(
-            throttling.downloadThroughputKbps
-          )}${NBSP}Kbps down, ` +
-          `${Util.i18n.formatNumber(
-            throttling.uploadThroughputKbps
-          )}${NBSP}Kbps up (DevTools)`;
+        const {cpuSlowdownMultiplier, requestLatencyMs} = throttling;
+        cpuThrottling = `${Util.i18n.formatNumber(cpuSlowdownMultiplier)}x slowdown (DevTools)`;
+        networkThrottling = `${Util.i18n.formatNumber(requestLatencyMs)}${NBSP}ms HTTP RTT, ` +
+          `${Util.i18n.formatNumber(throttling.downloadThroughputKbps)}${NBSP}Kbps down, ` +
+          `${Util.i18n.formatNumber(throttling.uploadThroughputKbps)}${NBSP}Kbps up (DevTools)`;
+
+        const isSlow4G = () => {
+          return requestLatencyMs === 150 * 3.75 &&
+            throttling.downloadThroughputKbps === 1.6 * 1024 * 0.9 &&
+            throttling.uploadThroughputKbps === 750 * 0.9;
+        };
+        summary = isSlow4G() ? Util.i18n.strings.runtimeSlow4g : Util.i18n.strings.runtimeCustom;
         break;
       }
       case 'simulate': {
-        const { cpuSlowdownMultiplier, rttMs, throughputKbps } = throttling;
-        cpuThrottling = `${Util.i18n.formatNumber(
-          cpuSlowdownMultiplier
-        )}x slowdown (Simulated)`;
-        networkThrottling =
-          `${Util.i18n.formatNumber(rttMs)}${NBSP}ms TCP RTT, ` +
-          `${Util.i18n.formatNumber(
-            throughputKbps
-          )}${NBSP}Kbps throughput (Simulated)`;
+        const {cpuSlowdownMultiplier, rttMs, throughputKbps} = throttling;
+        cpuThrottling = `${Util.i18n.formatNumber(cpuSlowdownMultiplier)}x slowdown (Simulated)`;
+        networkThrottling = `${Util.i18n.formatNumber(rttMs)}${NBSP}ms TCP RTT, ` +
+          `${Util.i18n.formatNumber(throughputKbps)}${NBSP}Kbps throughput (Simulated)`;
+
+        const isSlow4G = () => {
+          return rttMs === 150 && throughputKbps === 1.6 * 1024;
+        };
+        summary = isSlow4G() ? Util.i18n.strings.runtimeSlow4g : Util.i18n.strings.runtimeCustom;
         break;
       }
       default:
-        cpuThrottling = Util.i18n.strings.runtimeUnknown;
-        networkThrottling = Util.i18n.strings.runtimeUnknown;
+        summary = cpuThrottling = networkThrottling = Util.i18n.strings.runtimeUnknown;
     }
 
-    let deviceEmulation = Util.i18n.strings.runtimeNoEmulation;
-    if (settings.emulatedFormFactor === 'mobile') {
-      deviceEmulation = Util.i18n.strings.runtimeMobileEmulation;
-    } else if (settings.emulatedFormFactor === 'desktop') {
-      deviceEmulation = Util.i18n.strings.runtimeDesktopEmulation;
-    }
+    // TODO(paulirish): revise Runtime Settings strings: https://github.com/GoogleChrome/lighthouse/pull/11796
+    const deviceEmulation = {
+      mobile: Util.i18n.strings.runtimeMobileEmulation,
+      desktop: Util.i18n.strings.runtimeDesktopEmulation,
+    }[settings.formFactor] || Util.i18n.strings.runtimeNoEmulation;
 
     return {
       deviceEmulation,
       cpuThrottling,
       networkThrottling,
+      summary,
     };
   }
 
@@ -508,10 +489,8 @@ class Util {
     const lineNumbersToKeep = new Set();
     // Sort messages so we can check lineNumbersToKeep to see how big the gap to
     // the previous line is.
-    lineMessages = lineMessages.sort(
-      (a, b) => (a.lineNumber || 0) - (b.lineNumber || 0)
-    );
-    lineMessages.forEach(({ lineNumber }) => {
+    lineMessages = lineMessages.sort((a, b) => (a.lineNumber || 0) - (b.lineNumber || 0));
+    lineMessages.forEach(({lineNumber}) => {
       let firstSurroundingLineNumber = lineNumber - surroundingLineCount;
       let lastSurroundingLineNumber = lineNumber + surroundingLineCount;
 
@@ -525,17 +504,13 @@ class Util {
       if (lineNumbersToKeep.has(firstSurroundingLineNumber - minGapSize - 1)) {
         firstSurroundingLineNumber -= minGapSize;
       }
-      for (
-        let i = firstSurroundingLineNumber;
-        i <= lastSurroundingLineNumber;
-        i++
-      ) {
+      for (let i = firstSurroundingLineNumber; i <= lastSurroundingLineNumber; i++) {
         const surroundingLineNumber = i;
         lineNumbersToKeep.add(surroundingLineNumber);
       }
     });
 
-    return lines.filter((line) => lineNumbersToKeep.has(line.lineNumber));
+    return lines.filter(line => lineNumbersToKeep.has(line.lineNumber));
   }
 
   /**
@@ -543,6 +518,43 @@ class Util {
    */
   static isPluginCategory(categoryId) {
     return categoryId.startsWith('lighthouse-plugin-');
+  }
+
+  /**
+   * @param {LH.Result.GatherMode} gatherMode
+   */
+  static shouldDisplayAsFraction(gatherMode) {
+    return gatherMode === 'timespan' || gatherMode === 'snapshot';
+  }
+
+  /**
+   * @param {LH.ReportResult.Category} category
+   */
+  static calculateCategoryFraction(category) {
+    let numPassableAudits = 0;
+    let numPassed = 0;
+    let numInformative = 0;
+    let totalWeight = 0;
+    for (const auditRef of category.auditRefs) {
+      const auditPassed = Util.showAsPassed(auditRef.result);
+
+      // Don't count the audit if it's manual, N/A, or isn't displayed.
+      if (auditRef.group === 'hidden' ||
+          auditRef.result.scoreDisplayMode === 'manual' ||
+          auditRef.result.scoreDisplayMode === 'notApplicable') {
+        continue;
+      } else if (auditRef.result.scoreDisplayMode === 'informative') {
+        if (!auditPassed) {
+          ++numInformative;
+        }
+        continue;
+      }
+
+      ++numPassableAudits;
+      totalWeight += auditRef.weight;
+      if (auditPassed) numPassed++;
+    }
+    return {numPassed, numPassableAudits, numInformative, totalWeight};
   }
 }
 
@@ -553,19 +565,26 @@ class Util {
  */
 Util.reportJson = null;
 
-/** @type {I18n} */
-// @ts-ignore: Is set in report renderer.
-Util.i18n = null;
+/**
+ * An always-increasing counter for making unique SVG ID suffixes.
+ */
+Util.getUniqueSuffix = (() => {
+  let svgSuffix = 0;
+  return function() {
+    return svgSuffix++;
+  };
+})();
 
 /**
  * Report-renderer-specific strings.
  */
-Util.UIStrings = {
+const UIStrings = {
   /** Disclaimer shown to users below the metric values (First Contentful Paint, Time to Interactive, etc) to warn them that the numbers they see will likely change slightly the next time they run Lighthouse. */
-  varianceDisclaimer:
-    'Values are estimated and may vary. The [performance score is calculated](https://web.dev/performance-scoring/) directly from these metrics.',
+  varianceDisclaimer: 'Values are estimated and may vary. The [performance score is calculated](https://web.dev/performance-scoring/) directly from these metrics.',
   /** Text link pointing to an interactive calculator that explains Lighthouse scoring. The link text should be fairly short. */
   calculatorLink: 'See calculator.',
+  /** Label preceding a radio control for filtering the list of audits. The radio choices are various performance metrics (FCP, LCP, TBT), and if chosen, the audits in the report are hidden if they are not relevant to the selected metric. */
+  showRelevantAudits: 'Show audits relevant to:',
   /** Column heading label for the listing of opportunity audits. Each audit title represents an opportunity. There are only 2 columns, so no strict character limit.  */
   opportunityResourceColumnLabel: 'Opportunity',
   /** Column heading label for the estimated page load savings of opportunity audits. Estimated Savings is the total amount of time (in seconds) that Lighthouse computed could be reduced from the total page load time, if the suggested action is taken. There are only 2 columns, so no strict character limit. */
@@ -577,8 +596,6 @@ Util.UIStrings = {
   errorLabel: 'Error!',
   /** This label is shown above a bulleted list of warnings. It is shown directly below an audit that produced warnings. Warnings describe situations the user should be aware of, as Lighthouse was unable to complete all the work required on this audit. For example, The 'Unable to decode image (biglogo.jpg)' warning may show up below an image encoding audit. */
   warningHeader: 'Warnings: ',
-  /** The tooltip text on an expandable chevron icon. Clicking the icon expands a section to reveal a list of audit results that was hidden by default. */
-  auditGroupExpandTooltip: 'Show audits',
   /** Section heading shown above a list of passed audits that contain warnings. Audits under this section do not negatively impact the score, but Lighthouse has generated some potentially actionable suggestions that should be reviewed. This section is expanded by default and displays after the failing audits. */
   warningAuditsGroupTitle: 'Passed audits but with warnings',
   /** Section heading shown above a list of audits that are passing. 'Passed' here refers to a passing grade. This section is collapsed by default, as the user should be focusing on the failed audits instead. Users can click this heading to reveal the list. */
@@ -589,8 +606,7 @@ Util.UIStrings = {
   manualAuditsGroupTitle: 'Additional items to manually check',
 
   /** Label shown preceding any important warnings that may have invalidated the entire report. For example, if the user has Chrome extensions installed, they may add enough performance overhead that Lighthouse's performance metrics are unreliable. If shown, this will be displayed at the top of the report UI. */
-  toplevelWarningsMessage:
-    'There were issues affecting this run of Lighthouse:',
+  toplevelWarningsMessage: 'There were issues affecting this run of Lighthouse:',
 
   /** String of text shown in a graphical representation of the flow of network requests for the web page. This label represents the initial network request that fetches an HTML page. This navigation may be redirected (eg. Initial navigation to http://example.com redirects to https://www.example.com). */
   crcInitialNavigation: 'Initial Navigation',
@@ -603,13 +619,14 @@ Util.UIStrings = {
   snippetCollapseButtonLabel: 'Collapse snippet',
 
   /** Explanation shown to users below performance results to inform them that the test was done with a 4G network connection and to warn them that the numbers they see will likely change slightly the next time they run Lighthouse. 'Lighthouse' becomes link text to additional documentation. */
-  lsPerformanceCategoryDescription:
-    '[Lighthouse](https://developers.google.com/web/tools/lighthouse/) analysis of the current page on an emulated mobile network. Values are estimated and may vary.',
+  lsPerformanceCategoryDescription: '[Lighthouse](https://developers.google.com/web/tools/lighthouse/) analysis of the current page on an emulated mobile network. Values are estimated and may vary.',
   /** Title of the lab data section of the Performance category. Within this section are various speed metrics which quantify the pageload performance into values presented in seconds and milliseconds. "Lab" is an abbreviated form of "laboratory", and refers to the fact that the data is from a controlled test of a website, not measurements from real users visiting that site.  */
   labDataTitle: 'Lab Data',
 
   /** This label is for a checkbox above a table of items loaded by a web page. The checkbox is used to show or hide third-party (or "3rd-party") resources in the table, where "third-party resources" refers to items loaded by a web page from URLs that aren't controlled by the owner of the web page. */
   thirdPartyResourcesLabel: 'Show 3rd-party resources',
+  /** This label is for a button that opens a new tab to a webapp called "Treemap", which is a nested visual representation of a heierarchy of data related to the reports (script bytes and coverage, resource breakdown, etc.) */
+  viewTreemapLabel: 'View Treemap',
 
   /** Option in a dropdown menu that opens a small, summary report in a print dialog.  */
   dropdownPrintSummary: 'Print Summary',
@@ -623,33 +640,25 @@ Util.UIStrings = {
   dropdownSaveJSON: 'Save as JSON',
   /** Option in a dropdown menu that opens the current report in the Lighthouse Viewer Application. */
   dropdownViewer: 'Open in Viewer',
-  /** Option in a dropdown menu that saves the current report as a new Github Gist. */
+  /** Option in a dropdown menu that saves the current report as a new GitHub Gist. */
   dropdownSaveGist: 'Save as Gist',
   /** Option in a dropdown menu that toggles the themeing of the report between Light(default) and Dark themes. */
   dropdownDarkTheme: 'Toggle Dark Theme',
 
-  /** Title of the Runtime settings table in a Lighthouse report.  Runtime settings are the environment configurations that a specific report used at auditing time. */
-  runtimeSettingsTitle: 'Runtime Settings',
-  /** Label for a row in a table that shows the URL that was audited during a Lighthouse run. */
-  runtimeSettingsUrl: 'URL',
-  /** Label for a row in a table that shows the time at which a Lighthouse run was conducted; formatted as a timestamp, e.g. Jan 1, 1970 12:00 AM UTC. */
-  runtimeSettingsFetchTime: 'Fetch Time',
   /** Label for a row in a table that describes the kind of device that was emulated for the Lighthouse run.  Example values for row elements: 'No Emulation', 'Emulated Desktop', etc. */
   runtimeSettingsDevice: 'Device',
   /** Label for a row in a table that describes the network throttling conditions that were used during a Lighthouse run, if any. */
   runtimeSettingsNetworkThrottling: 'Network throttling',
   /** Label for a row in a table that describes the CPU throttling conditions that were used during a Lighthouse run, if any.*/
   runtimeSettingsCPUThrottling: 'CPU throttling',
-  /** Label for a row in a table that shows in what tool Lighthouse is being run (e.g. The lighthouse CLI, Chrome DevTools, Lightrider, WebPageTest, etc). */
-  runtimeSettingsChannel: 'Channel',
-  /** Label for a row in a table that shows the User Agent that was detected on the Host machine that ran Lighthouse. */
-  runtimeSettingsUA: 'User agent (host)',
   /** Label for a row in a table that shows the User Agent that was used to send out all network requests during the Lighthouse run. */
   runtimeSettingsUANetwork: 'User agent (network)',
   /** Label for a row in a table that shows the estimated CPU power of the machine running Lighthouse. Example row values: 532, 1492, 783. */
   runtimeSettingsBenchmark: 'CPU/Memory Power',
+  /** Label for a row in a table that shows the version of the Axe library used. Example row values: 2.1.0, 3.2.3 */
+  runtimeSettingsAxeVersion: 'Axe version',
 
-  /** Label for button to create an issue against the Lighthouse Github project. */
+  /** Label for button to create an issue against the Lighthouse GitHub project. */
   footerIssue: 'File an issue',
 
   /** Descriptive explanation for emulation setting when no device emulation is set. */
@@ -660,9 +669,31 @@ Util.UIStrings = {
   runtimeDesktopEmulation: 'Emulated Desktop',
   /** Descriptive explanation for a runtime setting that is set to an unknown value. */
   runtimeUnknown: 'Unknown',
+  /** Descriptive label that this analysis run was from a single pageload of a browser (not a summary of hundreds of loads) */
+  runtimeSingleLoad: 'Single page load',
+  /** Descriptive label that this analysis only considers the initial load of the page, and no interaction beyond when the page had "fully loaded" */
+  runtimeAnalysisWindow: 'Initial page load',
+  /** Descriptive explanation that this analysis run was from a single pageload of a browser, whereas field data often summarizes hundreds+ of page loads */
+  runtimeSingleLoadTooltip: 'This data is taken from a single page load, as opposed to field data summarizing many sessions.', // eslint-disable-line max-len
 
   /** Descriptive explanation for environment throttling that was provided by the runtime environment instead of provided by Lighthouse throttling. */
   throttlingProvided: 'Provided by environment',
+  /** Label for an interactive control that will reveal or hide a group of content. This control toggles between the text 'Show' and 'Hide'. */
+  show: 'Show',
+  /** Label for an interactive control that will reveal or hide a group of content. This control toggles between the text 'Show' and 'Hide'. */
+  hide: 'Hide',
+  /** Label for an interactive control that will reveal or hide a group of content. This control toggles between the text 'Expand view' and 'Collapse view'. */
+  expandView: 'Expand view',
+  /** Label for an interactive control that will reveal or hide a group of content. This control toggles between the text 'Expand view' and 'Collapse view'. */
+  collapseView: 'Collapse view',
+  /** Label indicating that Lighthouse throttled the page to emulate a slow 4G network connection. */
+  runtimeSlow4g: 'Slow 4G throttling',
+  /** Label indicating that Lighthouse throttled the page using custom throttling settings. */
+  runtimeCustom: 'Custom throttling',
 };
+Util.UIStrings = UIStrings;
 
-export default Util;
+export {
+  Util,
+  UIStrings,
+};
